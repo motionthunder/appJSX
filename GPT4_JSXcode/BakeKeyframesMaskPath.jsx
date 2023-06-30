@@ -1,4 +1,4 @@
-(function() {
+(function() { 
   function bakeMaskKeyframes() {
     var comp = app.project.activeItem;
     if (!(comp instanceof CompItem)) {
