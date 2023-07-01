@@ -1,34 +1,3 @@
-// Функция для копирования всех свойств и ключевых кадров с исходного слоя на слой назначения
-function copyProperties(source, destination) {
-    for (var i = 1; i <= source.numProperties; i++) {
-        var prop = source.property(i);
-        var destProp = destination.property(i);
-
-        if (prop.enabled && destProp.canSetEnabled) {
-            if (prop.propertyType === PropertyType.PROPERTY) {
-                if (prop.canVaryOverTime) {
-                    for (var j = 1; j <= prop.numKeys; j++) {
-                        destProp.setValueAtTime(prop.keyTime(j), prop.keyValue(j));
-                        if (prop.isSpatial && prop.propertyValueType === PropertyValueType.ThreeD_SPATIAL) {
-                            destProp.setSpatialTangentsAtKey(j, prop.keyInSpatialTangent(j), prop.keyOutSpatialTangent(j));
-                        }
-                        destProp.setInterpolationTypeAtKey(j, prop.keyInInterpolationType(j), prop.keyOutInterpolationType(j));
-                        if (prop.propertyValueType == PropertyValueType.ThreeD || prop.propertyValueType == PropertyValueType.TwoD || prop.propertyValueType == PropertyValueType.OneD) {
-                            destProp.setTemporalEaseAtKey(j, prop.keyInTemporalEase(j), prop.keyOutTemporalEase(j));
-                        }
-                    }
-                } else if (prop.canSetValue && !(prop.name == "Position" || prop.name == "Anchor Point" || prop.name == "Scale" || prop.name == "Rotation" || prop.name == "Opacity")) {
-                    destProp.setValue(prop.value);
-                }
-            } else if (prop.propertyType === PropertyType.INDEXED_GROUP || prop.propertyType === PropertyType.NAMED_GROUP) {
-                copyProperties(prop, destProp);
-            }
-        }
-    }
-}
-
-
-
 // Создаем Undo Group для возможности отмены действий скрипта
 app.beginUndoGroup("Create Precomps for Shape Layers");
 
@@ -83,29 +52,21 @@ if (!project) {
 
                 // Создаем новую композицию с уникальным именем и максимальными размерами слоя
                 var newComp = project.items.addComp(layer.name + "_precomp", maxX - minX, maxY - minY, comp.pixelAspect, comp.duration, comp.frameRate);
-                
+
                 // Копируем слой в новую композицию
                 layer.copyToComp(newComp);
 
-                // Получаем копию слоя в новой композиции
-                var newLayer = newComp.layer(1);
-
                 // Вычисляем новое положение слоя в прекомпозиции, чтобы он был в центре
-                var newPosX = (maxX - minX) / 2;
-                var newPosY = (maxY - minY) / 2;
-
-                // Устанавливаем новое положение слоя
-                for (var t = layer.inPoint; t <= layer.outPoint; t += comp.frameDuration) {
-                    newLayer.position.setValueAtTime(t, [newPosX, newPosY]);
+                var newLayerInComp = newComp.layer(1);
+                for (var t = newLayerInComp.inPoint; t <= newLayerInComp.outPoint; t += comp.frameDuration) {
+                    var originalPosAtTime = layer.position.valueAtTime(t, false);
+                    newLayerInComp.position.setValueAtTime(t, [originalPosAtTime[0] - minX, originalPosAtTime[1] - minY]);
                 }
 
-                // Копируем все свойства слоя
-                copyProperties(layer, newLayer);
-                
                 // Заменяем исходный слой на новую композицию
-                var newCompLayer = comp.layers.add(newComp);
-                newCompLayer.moveBefore(layer);
-                newCompLayer.position.setValue(originalPos);
+                var newLayer = comp.layers.add(newComp);
+                newLayer.moveBefore(layer);
+                newLayer.position.setValue(originalPos);
                 layer.remove();
             }
         }
