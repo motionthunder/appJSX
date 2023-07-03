@@ -1,48 +1,53 @@
-// Создаем окно интерфейса
-var win = new Window("dialog", "My Script");
-win.orientation = "column";
+(function main(thisObj) {
+    // Create the UI window
+    var win = (thisObj instanceof Panel) ? thisObj : new Window("palette", "My Script", undefined, {resizeable:true});
+    win.orientation = "column";
 
-// Добавляем кнопки
-var buttonCheckShapes = win.add("button", undefined, "Check Shapes");
-var buttonPrecomps = win.add("button", undefined, "Pre-comps");
-var buttonRender = win.add("button", undefined, "Render");
+    // Add input fields
+    var inputGroupName = win.add("edittext", undefined, "Name");
+    inputGroupName.characters = 15;
 
-// Добавляем чекбокс
-var checkboxCrop = win.add("checkbox", undefined, "Crop");
-checkboxCrop.value = false;
+    // Add buttons
+    var buttonCheckShapes = win.add("button", undefined, "Check Shapes");
+    var buttonPrecomps = win.add("button", undefined, "Pre-comps");
+    var buttonRender = win.add("button", undefined, "Render");
 
-// Добавляем поле для ввода имени прекомпозиции
-var precompNameInput = win.add("edittext", undefined, "Enter precomp name");
-precompNameInput.characters = 30;
+    // Add checkbox
+    var checkboxCrop = win.add("checkbox", undefined, "Crop");
+    checkboxCrop.value = false;
 
-// Добавляем обработчики событий для кнопок
-buttonCheckShapes.onClick = checkShapes;
+    // Add event handlers for buttons
+    buttonCheckShapes.onClick = checkShapes;
     
-var createdPrecomps = [];
-buttonPrecomps.onClick = function() {
-    createdPrecomps = createPrecomps01(checkboxCrop.value, precompNameInput.text);
-    alert('Created ' + createdPrecomps.length + ' precompositions');
-};
-buttonRender.onClick = function() {
-    renderPrecomps(createdPrecomps);
-};
+    var createdPrecomps = [];
+    buttonPrecomps.onClick = function() {
+        createdPrecomps = createPrecomps01(inputGroupName.text, checkboxCrop.value);
+        alert('Created ' + createdPrecomps.length + ' precompositions');
+    };
 
-// Отображаем окно
-win.center();
-win.show();
+    buttonRender.onClick = function() {
+        renderPrecomps(createdPrecomps);
+    };
 
+    // Display the window
+    win.layout.layout(true);
+    if (!(thisObj instanceof Panel)) {
+        win.show();
+    } else {
+        win.layout.layout(true);
+    }
 
 function checkShapes() {
-    // Получаем активный проект
+    // Get the active project
     var project = app.project;
 
-    // Проверяем, есть ли активный проект
+    // Check if there is an active project
     if (!project) {
         alert("No active project");
         return;
     }
 
-    // Проходим по всем композициям в проекте и присваиваем красный лейбл всем шейповым слоям
+    // Go through all the compositions in the project and assign a red label to all shape layers
     for (var j = 1; j <= project.numItems; j++) {
         if (project.item(j) instanceof CompItem) {
             for (var k = 1; k <= project.item(j).numLayers; k++) {
@@ -52,6 +57,33 @@ function checkShapes() {
             }
         }
     }
+}
+
+function renderPrecomps(precomps) {
+    var project = app.project;
+    var renderQueue = project.renderQueue;
+    var outputFolder = new Folder(project.file.path + "/Footages");
+
+    // Create the Footages folder if it doesn't exist
+    if (!outputFolder.exists) {
+        outputFolder.create();
+    }
+
+    for (var i = 0; i < precomps.length; i++) {
+        var precompFolder = new Folder(outputFolder.fullName + "/" + precomps[i].name);
+
+        // Create a subfolder for each precomp if it doesn't exist
+        if (!precompFolder.exists) {
+            precompFolder.create();
+        }
+
+        var renderQueueItem = renderQueue.items.add(precomps[i]);
+        var outputModule = renderQueueItem.outputModules[1];
+        outputModule.applyTemplate("High Quality with Alpha");
+        outputModule.file = new File(precompFolder.fullName + "/" + precomps[i].name);
+    }
+
+    renderQueue.render();
 }
 
 function createPrecomps() {
@@ -142,10 +174,10 @@ function createPrecomps() {
     return createdPrecomps;
 }
 
-function createPrecomps01(cropToCurrentFrame) {
+function createPrecomps01(namePrefix, cropToCurrentFrame) {
     app.beginUndoGroup("Create Precomps for All Layers");
 
-        var project = app.project;
+    var project = app.project;
     if (!project) {
         alert("No active project");
         return;
@@ -166,7 +198,9 @@ function createPrecomps01(cropToCurrentFrame) {
         }
     }
 
-        for (var i = 0; i < redLabelLayers.length; i++) {
+    var createdPrecomps = [];
+
+    for (var i = 0; i < redLabelLayers.length; i++) {
         var layer = redLabelLayers[i].layer;
         var comp = redLabelLayers[i].comp;
         var originalPos = layer.position.value;
@@ -199,9 +233,10 @@ function createPrecomps01(cropToCurrentFrame) {
         var precompHeight = maxY - minY;
         var precompCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
 
-        var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+        var precompName = namePrefix + "_" + (i + 1) + "_precomp";
+        var newComp = project.items.addComp(precompName, precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
 
-        layer.copyToComp(newComp);
+                layer.copyToComp(newComp);
 
         var newLayerInComp = newComp.layer(1);
         for (var t = newLayerInComp.inPoint; t <= newLayerInComp.outPoint; t += comp.frameDuration) {
@@ -222,60 +257,13 @@ function createPrecomps01(cropToCurrentFrame) {
         }
 
         layer.remove();
+
+        createdPrecomps.push(newComp);
     }
 
     app.endUndoGroup();
+
+    return createdPrecomps;
 }
-
-function renderPrecomps(precomps) {
-    var project = app.project;
-    var renderQueue = project.renderQueue;
-    var outputModuleSettings = {
-        "Quality": "Best",
-        "Use": "On",
-        "Format": "QuickTime",
-        "Channels": "RGB + Alpha",
-        "Depth": "Millions of Colors+",
-        "Output Audio": false
-    };
-
-    var outputFolder = new Folder(project.file.path + "/Footages");
-    if (!outputFolder.exists) {
-        if (!outputFolder.create()) {
-            alert("Не удалось создать папку " + outputFolder.fullName);
-            return;
-        }
-    }
-
-    for (var i = 0; i < precomps.length; i++) {
-        // Skip if the composition does not end with '_precomp'
-        if (!precomps[i].name.endsWith("_precomp")) {
-            continue;
-        }
-
-        var renderQueueItem = renderQueue.items.add(precomps[i]);
-        var outputModule = renderQueueItem.outputModule(1);
-        outputModule.setSettings(outputModuleSettings);
-
-        var outputCompFolder = new Folder(outputFolder.fullName + "/" + precomps[i].name);
-        if (!outputCompFolder.exists) {
-            if (!outputCompFolder.create()) {
-                alert("Не удалось создать папку " + outputCompFolder.fullName);
-                continue;
-            }
-        }
-
-        var outputFileName = outputCompFolder.fullName + "/" + precomps[i].name + ".mov";
-        outputModule.file = new File(outputFileName);
-    }
-
-    try {
-        renderQueue.render();
-    } catch(err) {
-        alert("Ошибка при рендеринге: " + err.message);
-    }
-}
-
-
-// Запускаем скрипт
-main();
+// Start the script
+})(this);
