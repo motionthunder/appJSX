@@ -23,13 +23,6 @@
     var buttonRender = controlGroup.add("button", undefined, "Render");
     var buttonReplace = controlGroup.add("button", undefined, "Replace"); // New button
 
-    var checkboxApplyTrackMatte = controlGroup.add("checkbox", undefined, "Apply Track Matte");
-    checkboxApplyTrackMatte.value = true;
-
-    buttonPrecomps.onClick = function() {
-    createdPrecomps = createPrecomps01(inputGroupName.text, checkboxCrop.value, checkboxApplyTrackMatte.value);
-    };
-
     // Add checkbox
     var checkboxCrop = controlGroup.add("checkbox", undefined, "Crop");
     checkboxCrop.value = false;
@@ -198,8 +191,7 @@ function importSafeWithError(importOptions) {
     return null;
 }
 
-
-function createPrecomps(applyTrackMatte) {
+function createPrecomps() {
        app.beginUndoGroup("Create Precomps for All Layers");
 
     var project = app.project;
@@ -264,29 +256,44 @@ function createPrecomps(applyTrackMatte) {
         newLayer.moveBefore(layer);
         newLayer.position.setValue(precompCenter);
 
-    for (var i = 0; i < redLabelLayers.length; i++) {
-        var layer = redLabelLayers[i].layer;
+       var trackMatteType = layer.trackMatteType;
+        var relatedLayer = null;
 
-        // Проверяем, был ли слой уже обработан
-        if (isLayerProcessed(layer.id)) {
-            continue;
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            if (layer.hasTrackMatte) {
+                relatedLayer = layer.trackMatte; // слой-источник
+            } else if (layer.isTrackMatte) {
+                relatedLayer = comp.layer(layer.index + 1); // слой-маска
+            }
         }
 
-        // Если исходный слой имел связанный слой-маску и флажок включен, устанавливаем ее для нового слоя
-        var trackMatteType = layer.trackMatteType;
-        if (applyTrackMatte && trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
-            newLayer.trackMatteType = trackMatteType;
+        var layersToPrecomp = [layer];
+        if (relatedLayer && relatedLayer.source) {
+            if (relatedLayer.source instanceof ShapeLayerSource) {
+                layersToPrecomp.push(relatedLayer);
+            }
         }
 
-        // Если флажок выключен и слой имеет связанный слой-маску, добавляем исходный слой и слой-маску в одну и ту же прекомпозицию
-        else if (!applyTrackMatte && trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
-            var matteLayer = layer.trackMatte;
-            layer.copyToComp(newComp);
-            matteLayer.copyToComp(newComp);
-            // Помечаем оба слоя как обработанные
-            processedLayers.push(layer.id);
-            processedLayers.push(matteLayer.id);
+        var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+        
+        layersToPrecomp.forEach(function(layerToPrecomp) {
+            layerToPrecomp.copyToComp(newComp);
+        });
+
+        // удаление исходных слоев
+        layersToPrecomp.forEach(function(layerToPrecomp) {
+            layerToPrecomp.remove();
+        });
+
+        // создаем новую ссылку на прекомпозицию в исходной композиции
+        var newLayerInComp = comp.layers.add(newComp);
+        newLayerInComp.moveBefore(layer);
+
+        // если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            newLayerInComp.trackMatteType = trackMatteType;
         }
+    
 
         layer.remove();
     }
@@ -301,7 +308,7 @@ function createPrecomps(applyTrackMatte) {
     app.endUndoGroup();
 
     return createdPrecomps;
-}}
+}
 
 function createPrecomps01(namePrefix, cropToCurrentFrame) {
 app.beginUndoGroup("Create Precomps for All Layers");
@@ -382,13 +389,44 @@ app.beginUndoGroup("Create Precomps for All Layers");
         newLayer.moveBefore(layer);
         newLayer.position.setValue(precompCenter);
 
-        // сохраняем тип матового слоя
         var trackMatteType = layer.trackMatteType;
-        
-        // Если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        var relatedLayer = null;
+
         if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
-            newLayer.trackMatteType = trackMatteType;
+            if (layer.hasTrackMatte) {
+                relatedLayer = layer.trackMatte; // слой-источник
+            } else if (layer.isTrackMatte) {
+                relatedLayer = comp.layer(layer.index + 1); // слой-маска
+            }
         }
+
+        var layersToPrecomp = [layer];
+        if (relatedLayer && relatedLayer.source) {
+            if (relatedLayer.source instanceof ShapeLayerSource) {
+                layersToPrecomp.push(relatedLayer);
+            }
+        }
+
+        var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+        
+        layersToPrecomp.forEach(function(layerToPrecomp) {
+            layerToPrecomp.copyToComp(newComp);
+        });
+
+        // удаление исходных слоев
+        layersToPrecomp.forEach(function(layerToPrecomp) {
+            layerToPrecomp.remove();
+        });
+
+        // создаем новую ссылку на прекомпозицию в исходной композиции
+        var newLayerInComp = comp.layers.add(newComp);
+        newLayerInComp.moveBefore(layer);
+
+        // если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            newLayerInComp.trackMatteType = trackMatteType;
+        }
+    
 
         layer.remove();
 
@@ -399,4 +437,5 @@ app.beginUndoGroup("Create Precomps for All Layers");
 
     return createdPrecomps;
 }
-}(this));
+// Start the script
+})(this);

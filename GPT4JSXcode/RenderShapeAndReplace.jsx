@@ -1,117 +1,160 @@
-var mainWindow = new Window("palette", "ScriptUI Panel", undefined);
-mainWindow.orientation = "column";
+(function main(thisObj) {
+    // Create the UI window
+    var win = (thisObj instanceof Panel) ? thisObj : new Window("palette", "My Script", undefined, {resizeable:true});
+    win.orientation = "column";
+    win.alignChildren = ["center", "center"];
+    win.spacing = 0;
+    win.margins = 0;
 
-var groupOne = mainWindow.add("group", undefined, "groupOne");
-groupOne.orientation = "row";
-var renderButton = groupOne.add("button", undefined, "Push Render");
-var replaceButton = groupOne.add("button", undefined, "Replace Media");
+    // Create a group for the controls
+    var controlGroup = win.add("group");
+    controlGroup.orientation = "column";
+    controlGroup.alignChildren = ["center", "center"];
+    controlGroup.spacing = 10;
+    controlGroup.margins = 75;
 
-var project = app.project; // Объявляем project на верхнем уровне
+    // Add input fields
+    var inputGroupName = controlGroup.add("edittext", undefined, "Name");
+    inputGroupName.characters = 15;
 
-mainWindow.center();
-mainWindow.show();
+    // Add buttons
+    var buttonCheckShapes = controlGroup.add("button", undefined, "Check Shapes");
+    var buttonPrecomps = controlGroup.add("button", undefined, "Pre-comps");
+    var buttonRender = controlGroup.add("button", undefined, "Render");
+    var buttonReplace = controlGroup.add("button", undefined, "Replace"); // New button
 
-renderButton.onClick = function() {
+    // Add checkbox
+    var checkboxCrop = controlGroup.add("checkbox", undefined, "Crop");
+    checkboxCrop.value = false;
 
-if (!project || !project.file) {
-    throw new Error("Нет открытых проектов или проект не сохранен");
-}
+    // Add event handlers for buttons
+    buttonCheckShapes.onClick = checkShapes;
+    
+    var createdPrecomps = [];
+    buttonPrecomps.onClick = function() {
+        createdPrecomps = createPrecomps01(inputGroupName.text, checkboxCrop.value);
+    };
 
-var renderQueue = project.renderQueue;
-var processedLayers = []; // Array to store processed layers
-var totalProcessedLayers = 0; // Total count of processed layers
+    buttonRender.onClick = function() {
+        renderPrecomps(createdPrecomps);
+    };
 
-function setRenderSettings(renderQueueItem, comp, index, suffix) {
-    var projectPath = project.file.path;
-
-    var footagesPath = projectPath + "/Footages";
-    var footagesFolder = new Folder(footagesPath);
-    if (!footagesFolder.exists) {
-        var created = footagesFolder.create();
-        if (!created) {
-            throw new Error("Не удалось создать папку Footages");
-        }
-    }
-
-    var compFootagesPath = footagesPath + "/" + comp.name;
-    var compFootagesFolder = new Folder(compFootagesPath);
-    if (!compFootagesFolder.exists) {
-        var created = compFootagesFolder.create();
-        if (!created) {
-            throw new Error("Не удалось создать папку для композиции: " + comp.name);
-        }
-    }
-
-    var outputFileName = compFootagesPath + "/" + comp.name + "_shape" + index + suffix + ".mov";
-
-    if (renderQueueItem.outputModules.length > 0) {
-        renderQueueItem.outputModules[1].file = new File(outputFileName);
-    } else {
-        throw new Error("У элемента очереди рендеринга нет модулей вывода");
-    }
-}
-
-function isLayerProcessed(layerId) {
-    for (var i = 0; i < processedLayers.length; i++) {
-        if (processedLayers[i] === layerId) {
-            return true;
-        }
-    }
-    return false;
-}
-
-app.beginUndoGroup("Precompose Red Layers");
-for (var i = 1; i <= project.numItems; i++) {
-    var item = project.item(i);
-
-    if (item instanceof CompItem && item.name.indexOf("LabElements_") !== 0) {
-        var comp = item;
-        var redLayers = [];
-
-        for (var j = 1; j <= comp.numLayers; j++) {
-            var layer = comp.layer(j);
-
-            if (layer.label === 1 && !isLayerProcessed(layer.id)) { // Check if the layer is not processed yet
-                redLayers.push(layer.index);
-                processedLayers.push(layer.id); // Add the layer to the processed list
+buttonReplace.onClick = function() {
+    var outputFolder = new Folder(app.project.file.path + "/Footages");
+    var folders = outputFolder.getFiles(function(file) {
+        return file instanceof Folder;
+    });
+    for (var i = 0; i < folders.length; i++) {
+        var footages = folders[i].getFiles(function(file) {
+            return file instanceof File;
+        });
+        for (var j = 0; j < footages.length; j++) {
+            var importOptions = new ImportOptions(footages[j]);
+            var importedFile = importSafeWithError(importOptions);
+            if (importedFile) {
+                var parentFolderName = decodeURI(footages[j].parent.name); // Get the name of the parent folder
+                replaceMediaInComps(importedFile, parentFolderName); // Use the parent folder name for replacement
             }
         }
+    }
+};
 
-        if (redLayers.length > 0) {
-            for (var k = 0; k < redLayers.length; k++) {
-                try {
-                    var precompLayers = [redLayers[k]];
+    // Display the window
+    win.layout.layout(true);
+    if (!(thisObj instanceof Panel)) {
+        win.center();
+        win.show();
+    } else {
+        win.layout.resize();
+    }
 
-                    var redLayer = comp.layer(redLayers[k]);
 
-                    var precomp = comp.layers.precompose(precompLayers, "LabElements_" + (++totalProcessedLayers), true);
+function replaceMediaInComps(newMedia, newMediaName) {
+    for (var i = 1; i <= app.project.numItems; i++) {
+        if (app.project.item(i) instanceof CompItem) {
+            var comp = app.project.item(i);
+            if (comp.name == newMediaName) {
+                replaceLayersInComp(comp, newMedia);
+            }
+        }
+    }
+}
 
-                    var renderQueueItem = renderQueue.items.add(precomp);
+function replaceLayersInComp(comp, newMedia) {
+    var layersToDelete = [];
+    
+    for (var i = 1; i <= comp.numLayers; i++) {
+        var layer = comp.layer(i);
+        layersToDelete.push(layer);
+    }
+    
+    // If there are layers to replace, add new media layer and delete old layers
+    if (layersToDelete.length > 0) {
+        comp.layers.add(newMedia);
+        
+        for (var i = 0; i < layersToDelete.length; i++) {
+            layersToDelete[i].remove();
+        }
+    }
+}
 
-                    setRenderSettings(renderQueueItem, precomp, i, "_precomp" + i + "_" + k);
-                } catch(err) {
-                    // Catch the error when the layer has no source or other errors
-                    alert("Error: " + err.message + "\nLayer: " + layer.name + "\nPre-compse: " + comp.name);
+
+
+function checkShapes() {
+    // Get the active project
+    var project = app.project;
+
+    // Check if there is an active project
+    if (!project) {
+        alert("No active project");
+        return;
+    }
+
+    // Go through all the compositions in the project and assign a red label to all shape layers
+    for (var j = 1; j <= project.numItems; j++) {
+        if (project.item(j) instanceof CompItem) {
+            for (var k = 1; k <= project.item(j).numLayers; k++) {
+                if (project.item(j).layer(k).matchName === "ADBE Vector Layer") {
+                    project.item(j).layer(k).label = 1;
                 }
             }
         }
     }
 }
-app.endUndoGroup();
 
-try {
+function renderPrecomps(precomps) {
+    var project = app.project;
+    var renderQueue = project.renderQueue;
+    var outputFolder = new Folder(project.file.path + "/Footages");
+
+    // Create the Footages folder if it doesn't exist
+    if (!outputFolder.exists) {
+        outputFolder.create();
+    }
+
+    for (var i = 0; i < precomps.length; i++) {
+        var precompFolder = new Folder(outputFolder.fullName + "/" + precomps[i].name);
+
+        // Create a subfolder for each precomp if it doesn't exist
+        if (!precompFolder.exists) {
+            precompFolder.create();
+        }
+
+        var renderQueueItem = renderQueue.items.add(precomps[i]);
+        var outputModule = renderQueueItem.outputModules[1];
+        outputModule.applyTemplate("High Quality with Alpha");
+        outputModule.file = new File(precompFolder.fullName + "/" + precomps[i].name);
+    }
+
     renderQueue.render();
-} catch(err) {
-    alert("Error during rendering: " + err.message);
-}
-}
 
-var projectPath = app.project.file.path;
-var originFolderPath = new Folder(projectPath + "/Footages");
-
-replaceButton.onClick = function() {
-    alert("Replace Media Button Clicked");
-    processFolder(originFolderPath); // Import the files of the folder
+    // After rendering, replace the footages in the precompositions
+    var footages = outputFolder.getFiles();
+    for (var i = 0; i < footages.length; i++) {
+        if (footages[i] instanceof File) {
+            processFile(footages[i], precomps[i].name);
+        }
+    }
 }
 
 function processFile(theFile, newMediaName) {
@@ -127,75 +170,210 @@ function processFile(theFile, newMediaName) {
     }
 }
 
+function findOrCreateFolder(name) {
+    for (var i = 1; i <= app.project.rootFolder.numItems; i++) {
+        if (app.project.rootFolder.item(i).name === name) {
+            return app.project.rootFolder.item(i);
+        }
+    }
+    return app.project.items.addFolder(name);
+}
+
 function importSafeWithError(importOptions) {
     try { 
-        return app.project.importFile(importOptions);
+        var importedFile = app.project.importFile(importOptions);
+        var footagesFolder = findOrCreateFolder("Footages");
+        importedFile.parentFolder = footagesFolder;
+        return importedFile;
     } catch (error) {
         alert("Error while importing file: " + error.toString());
     }
     return null;
 }
 
-// Updated function that processes subfolders
-function processFolder(folder) {
-    var filesAndFolders = folder.getFiles();
-    for (var i = 0; i < filesAndFolders.length; i++) {
-        if (filesAndFolders[i] instanceof File) {
-            processFile(filesAndFolders[i], folder.name); 
-        }
-        else if (filesAndFolders[i] instanceof Folder) {
-            processFolder(filesAndFolders[i]); // recursive call to process subfolders
-        }
-    }   
-}
+function createPrecomps() {
+       app.beginUndoGroup("Create Precomps for All Layers");
 
-function replaceMediaInComps(newMedia, newMediaName) {
-    for (var i = 1; i <= app.project.numItems; i++) {
-        if (app.project.item(i) instanceof CompItem) {
-            var comp = app.project.item(i);
-            replaceLayersInComp(comp, newMedia, newMediaName);
-        }
+    var project = app.project;
+    if (!project) {
+        alert("No active project");
+        return;
     }
-}
 
-function replaceLayersInComp(comp, newMedia, newMediaName) {
-    var layersToDelete = [];
-    
-    // Check if the composition name matches the new media's parent folder name
-    if (comp.name == newMediaName) {
-        for (var i = 1; i <= comp.numLayers; i++) {
-            var layer = comp.layer(i);
-            layersToDelete.push(layer);
-        }
-        
-        // If there are layers to replace, add new media layer and delete old layers
-        if (layersToDelete.length > 0) {
-            comp.layers.add(newMedia);
-            
-            for (var i = 0; i < layersToDelete.length; i++) {
-                layersToDelete[i].remove();
+    var redLabelLayers = [];
+
+    for (var j = 1; j <= project.numItems; j++) {
+        if (project.item(j) instanceof CompItem) {
+            for (var k = 1; k <= project.item(j).numLayers; k++) {
+                if (project.item(j).layer(k).label === 1) {
+                    redLabelLayers.push({
+                        layer: project.item(j).layer(k),
+                        comp: project.item(j)
+                    });
+                }
             }
         }
     }
+
+    for (var i = 0; i < redLabelLayers.length; i++) {
+        var layer = redLabelLayers[i].layer;
+        var comp = redLabelLayers[i].comp;
+        var originalPos = layer.position.value;
+
+        var minX = Infinity;
+        var minY = Infinity;
+        var maxX = -Infinity;
+        var maxY = -Infinity;
+        for (var t = layer.inPoint; t <= layer.outPoint; t += comp.frameDuration) {
+            var rect = layer.sourceRectAtTime(t, false);
+            var pos = layer.position.valueAtTime(t, false);
+            minX = Math.min(minX, pos[0] - rect.width / 2);
+            minY = Math.min(minY, pos[1] - rect.height / 2);
+            maxX = Math.max(maxX, pos[0] + rect.width / 2);
+            maxY = Math.max(maxY, pos[1] + rect.height / 2);
+        }
+
+        minX = Math.round(minX);
+        minY = Math.round(minY);
+        maxX = Math.round(maxX);
+        maxY = Math.round(maxY);
+
+        var precompWidth = maxX - minX;
+        var precompHeight = maxY - minY;
+        var precompCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
+
+        var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+
+        layer.copyToComp(newComp);
+
+        var newLayerInComp = newComp.layer(1);
+        for (var t = newLayerInComp.inPoint; t <= newLayerInComp.outPoint; t += comp.frameDuration) {
+            var originalPosAtTime = layer.position.valueAtTime(t, false);
+            newLayerInComp.position.setValueAtTime(t, [originalPosAtTime[0] - minX, originalPosAtTime[1] - minY]);
+        }
+
+        var newLayer = comp.layers.add(newComp);
+        newLayer.moveBefore(layer);
+        newLayer.position.setValue(precompCenter);
+
+        // сохраняем тип матового слоя
+        var trackMatteType = layer.trackMatteType;
+        
+        // Если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            newLayer.trackMatteType = trackMatteType;
+        }
+
+        layer.remove();
+    }
+
+    var createdPrecomps = [];
+    for (var i = 0; i < redLabelLayers.length; i++) {
+        // Остальной код
+
+        createdPrecomps.push(newComp);
+    }
+
+    app.endUndoGroup();
+
+    return createdPrecomps;
 }
 
+function createPrecomps01(namePrefix, cropToCurrentFrame) {
+app.beginUndoGroup("Create Precomps for All Layers");
 
+    var project = app.project;
+    if (!project) {
+        alert("No active project");
+        return;
+    }
 
+    var redLabelLayers = [];
 
+    for (var j = 1; j <= project.numItems; j++) {
+        if (project.item(j) instanceof CompItem) {
+            for (var k = 1; k <= project.item(j).numLayers; k++) {
+                if (project.item(j).layer(k).label === 1) {
+                    redLabelLayers.push({
+                        layer: project.item(j).layer(k),
+                        comp: project.item(j)
+                    });
+                }
+            }
+        }
+    }
 
+    var createdPrecomps = [];
 
+    for (var i = 0; i < redLabelLayers.length; i++) {
+        var layer = redLabelLayers[i].layer;
+        var comp = redLabelLayers[i].comp;
+        var originalPos = layer.position.value;
 
+        var minX = Infinity;
+        var minY = Infinity;
+        var maxX = -Infinity;
+        var maxY = -Infinity;
 
+    // Если стоит галочка "Crop", вычисляем прямоугольник только для последнего кадра слоя
+    var tStart = cropToCurrentFrame ? layer.outPoint : layer.inPoint;
+    var tEnd = cropToCurrentFrame ? layer.outPoint : layer.outPoint;
 
+    for (var t = tStart; t <= tEnd; t += comp.frameDuration) {
+        var rect = layer.sourceRectAtTime(t, false);
+        var pos = layer.position.valueAtTime(t, false);
+        minX = Math.min(minX, pos[0] - rect.width / 2);
+        minY = Math.min(minY, pos[1] - rect.height / 2);
+        maxX = Math.max(maxX, pos[0] + rect.width / 2);
+        maxY = Math.max(maxY, pos[1] + rect.height / 2);
+    }
 
+ 
+        minX = Math.round(minX);
+        minY = Math.round(minY);
+        maxX = Math.round(maxX);
+        maxY = Math.round(maxY);
 
+        var precompWidth = maxX - minX;
+        var precompHeight = maxY - minY;
+        var precompCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
 
+               var precompName;
+            if (namePrefix === "def") {
+                precompName = layer.name + "";
+            } else {
+                precompName = namePrefix + "_" + (i + 1) + "";
+            }
+        var newComp = project.items.addComp(precompName, precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
 
+                layer.copyToComp(newComp);
 
+        var newLayerInComp = newComp.layer(1);
+        for (var t = newLayerInComp.inPoint; t <= newLayerInComp.outPoint; t += comp.frameDuration) {
+            var originalPosAtTime = layer.position.valueAtTime(t, false);
+            newLayerInComp.position.setValueAtTime(t, [originalPosAtTime[0] - minX, originalPosAtTime[1] - minY]);
+        }
 
+        var newLayer = comp.layers.add(newComp);
+        newLayer.moveBefore(layer);
+        newLayer.position.setValue(precompCenter);
 
+        // сохраняем тип матового слоя
+        var trackMatteType = layer.trackMatteType;
+        
+        // Если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            newLayer.trackMatteType = trackMatteType;
+        }
 
+        layer.remove();
 
+        createdPrecomps.push(newComp);
+    }
 
+    app.endUndoGroup();
 
-
+    return createdPrecomps;
+}
+// Start the script
+})(this);
