@@ -24,18 +24,15 @@
     var buttonReplace = controlGroup.add("button", undefined, "Replace"); // New button
 
     // Add checkbox
-    var checkboxApplyTrackMatte = controlGroup.add("checkbox", undefined, "Apply Track Matte");
-    checkboxApplyTrackMatte.value = true;
-
     var checkboxCrop = controlGroup.add("checkbox", undefined, "Crop");
     checkboxCrop.value = false;
 
     // Add event handlers for buttons
     buttonCheckShapes.onClick = checkShapes;
-
+    
     var createdPrecomps = [];
     buttonPrecomps.onClick = function() {
-        createdPrecomps = createPrecomps(inputGroupName.text, checkboxCrop.value, checkboxApplyTrackMatte.value);
+        createdPrecomps = createPrecomps01(inputGroupName.text, checkboxCrop.value);
     };
 
     buttonRender.onClick = function() {
@@ -100,6 +97,7 @@ function replaceLayersInComp(comp, newMedia) {
         }
     }
 }
+
 
 
 function checkShapes() {
@@ -193,8 +191,8 @@ function importSafeWithError(importOptions) {
     return null;
 }
 
-function createPrecomps(namePrefix, cropToCurrentFrame, applyTrackMatte) {
-    app.beginUndoGroup("Create Precomps for All Layers");
+function createPrecomps() {
+       app.beginUndoGroup("Create Precomps for All Layers");
 
     var project = app.project;
     if (!project) {
@@ -207,57 +205,123 @@ function createPrecomps(namePrefix, cropToCurrentFrame, applyTrackMatte) {
     for (var j = 1; j <= project.numItems; j++) {
         if (project.item(j) instanceof CompItem) {
             for (var k = 1; k <= project.item(j).numLayers; k++) {
-                var currentLayer = project.item(j).layer(k);
-                if (currentLayer.label === 1) {
-                    var trackMatteLayer = null;
-                    if (k < project.item(j).numLayers) {
-                        var potentialTrackMatteLayer = project.item(j).layer(k + 1);
-                        if (potentialTrackMatteLayer.hasTrackMatte && potentialTrackMatteLayer.trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
-                            trackMatteLayer = potentialTrackMatteLayer;
-                        }
-                    }
+                if (project.item(j).layer(k).label === 1) {
                     redLabelLayers.push({
-                        layer: currentLayer,
-                        comp: project.item(j),
-                        trackMatteLayer: trackMatteLayer
+                        layer: project.item(j).layer(k),
+                        comp: project.item(j)
                     });
                 }
             }
         }
     }
-    alert("Collected red layers: " + redLabelLayers.length); // check
-
-    var createdPrecomps = [];
 
     for (var i = 0; i < redLabelLayers.length; i++) {
-        alert("Creating precomp " + (i + 1) + " out of " + redLabelLayers.length); // check
         var layer = redLabelLayers[i].layer;
         var comp = redLabelLayers[i].comp;
-        var trackMatteLayer = redLabelLayers[i].trackMatteLayer;
-        var layersForPrecomp = [layer];
-        if (trackMatteLayer) {
-            layersForPrecomp.push(trackMatteLayer);
+        var originalPos = layer.position.value;
+
+        var minX = Infinity;
+        var minY = Infinity;
+        var maxX = -Infinity;
+        var maxY = -Infinity;
+        for (var t = layer.inPoint; t <= layer.outPoint; t += comp.frameDuration) {
+            var rect = layer.sourceRectAtTime(t, false);
+            var pos = layer.position.valueAtTime(t, false);
+            minX = Math.min(minX, pos[0] - rect.width / 2);
+            minY = Math.min(minY, pos[1] - rect.height / 2);
+            maxX = Math.max(maxX, pos[0] + rect.width / 2);
+            maxY = Math.max(maxY, pos[1] + rect.height / 2);
         }
 
-        var precomp = createPrecompFromLayers(namePrefix, i, comp, layersForPrecomp, cropToCurrentFrame);
+        minX = Math.round(minX);
+        minY = Math.round(minY);
+        maxX = Math.round(maxX);
+        maxY = Math.round(maxY);
 
-    if (applyTrackMatte && trackMatteLayer) {
-        var newLayer = comp.layers.add(precomp);
+        var precompWidth = maxX - minX;
+        var precompHeight = maxY - minY;
+        var precompCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
+
+        var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+
+        layer.copyToComp(newComp);
+
+        var newLayerInComp = newComp.layer(1);
+        for (var t = newLayerInComp.inPoint; t <= newLayerInComp.outPoint; t += comp.frameDuration) {
+            var originalPosAtTime = layer.position.valueAtTime(t, false);
+            newLayerInComp.position.setValueAtTime(t, [originalPosAtTime[0] - minX, originalPosAtTime[1] - minY]);
+        }
+
+        var newLayer = comp.layers.add(newComp);
         newLayer.moveBefore(layer);
-        newLayer.position.setValue([precompWidth / 2, precompHeight / 2]); // изменение здесь
-        newLayer.trackMatteType = trackMatteLayer.trackMatteType;
-        layer.remove();
-        trackMatteLayer.remove();
+        newLayer.position.setValue(precompCenter);
+
+    // сохраняем тип матового слоя
+    var trackMatteType = layer.trackMatteType;
+    
+    // определяем слой-маску или слой-источник, если есть
+    var relatedLayer = null;
+    if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+        if (layer.hasTrackMatte) {
+            relatedLayer = layer.trackMatte; // слой-источник
+        } else if (layer.isTrackMatte) {
+            relatedLayer = comp.layer(layer.index + 1); // слой-маска
+        }
+    }
+    
+    // если связанный слой также является shape-слоем
+    if (relatedLayer && relatedLayer.source && relatedLayer.source instanceof ShapeLayerSource) {
+        // проверяем, есть ли уже прекомпозиция для данной пары
+        var existingPrecomp = null;
+        for (var j = 1; j <= project.numItems; j++) {
+            if (project.item(j).name == layer.name + "_precomp" || project.item(j).name == relatedLayer.name + "_precomp") {
+                existingPrecomp = project.item(j);
+                break;
+            }
+        }
+
+        if (existingPrecomp) {
+            // если уже существует прекомпозиция, просто добавляем в неё слой
+            layer.copyToComp(existingPrecomp);
+        } else {
+            // если нет, создаем новую прекомпозицию и добавляем в неё оба слоя
+            var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+            layer.copyToComp(newComp);
+            relatedLayer.copyToComp(newComp);
+
+            var newLayerInComp = newComp.layer(1);
+            var newRelatedLayerInComp = newComp.layer(2);
+            // задаем позицию обоим слоям, как и раньше
+
+            var newLayer = comp.layers.add(newComp);
+            newLayer.moveBefore(layer);
+            newLayer.position.setValue(precompCenter);
+
+            relatedLayer.remove(); // удаляем связанный слой
+        }
     } else {
-        for (var j = 0; j < layersForPrecomp.length; j++) {
-            var newLayer = comp.layers.add(precomp);
-            newLayer.moveBefore(layersForPrecomp[j]);
-            newLayer.position.setValue([precompWidth / 2, precompHeight / 2]); // изменение здесь
-            layersForPrecomp[j].remove();
+        // ваш исходный код для слоя без связанного shape-слоя
+        var newLayerInComp = newComp.layer(1);
+        // задаем позицию, как и раньше
+
+        var newLayer = comp.layers.add(newComp);
+        newLayer.moveBefore(layer);
+        newLayer.position.setValue(precompCenter);
+
+        // Если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            newLayer.trackMatteType = trackMatteType;
         }
     }
 
-        createdPrecomps.push(precomp);
+        layer.remove();
+    }
+
+    var createdPrecomps = [];
+    for (var i = 0; i < redLabelLayers.length; i++) {
+        // Остальной код
+
+        createdPrecomps.push(newComp);
     }
 
     app.endUndoGroup();
@@ -265,69 +329,150 @@ function createPrecomps(namePrefix, cropToCurrentFrame, applyTrackMatte) {
     return createdPrecomps;
 }
 
-function createPrecompFromLayers(namePrefix, index, comp, layers, cropToCurrentFrame) {
-    var minX = Infinity;
-    var minY = Infinity;
-    var maxX = -Infinity;
-    var maxY = -Infinity;
+function createPrecomps01(namePrefix, cropToCurrentFrame) {
+app.beginUndoGroup("Create Precomps for All Layers");
 
-    for (var i = 0; i < layers.length; i++) {
-        var layer = layers[i];
+    var project = app.project;
+    if (!project) {
+        alert("No active project");
+        return;
+    }
 
-        var tStart = (cropToCurrentFrame && layer.outPoint - layer.inPoint > comp.frameDuration) 
-            ? layer.outPoint - comp.frameDuration 
-            : layer.inPoint;
-        var tEnd = layer.outPoint;
+    var redLabelLayers = [];
 
-        for (var t = tStart; t <= tEnd; t += comp.frameDuration) {
-            var rect = layer.sourceRectAtTime(t, false);
-            var pos = layer.position.valueAtTime(t, false);
-
-            var left = pos[0] - rect.width / 2;
-            var top = pos[1] - rect.height / 2;
-            var right = pos[0] + rect.width / 2;
-            var bottom = pos[1] + rect.height / 2;
-
-            minX = Math.min(minX, left);
-            minY = Math.min(minY, top);
-            maxX = Math.max(maxX, right);
-            maxY = Math.max(maxY, bottom);
+    for (var j = 1; j <= project.numItems; j++) {
+        if (project.item(j) instanceof CompItem) {
+            for (var k = 1; k <= project.item(j).numLayers; k++) {
+                if (project.item(j).layer(k).label === 1) {
+                    redLabelLayers.push({
+                        layer: project.item(j).layer(k),
+                        comp: project.item(j)
+                    });
+                }
+            }
         }
     }
 
-    minX = Math.round(minX);
-    minY = Math.round(minY);
-    maxX = Math.round(maxX);
-    maxY = Math.round(maxY);
+    var createdPrecomps = [];
 
-    var precompWidth = maxX - minX;
-    var precompHeight = maxY - minY;
-    var precompCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
+    for (var i = 0; i < redLabelLayers.length; i++) {
+        var layer = redLabelLayers[i].layer;
+        var comp = redLabelLayers[i].comp;
+        var originalPos = layer.position.value;
 
-    var precompName = (namePrefix === "def") ? (layers[0].name + "") : (namePrefix + "_" + (index + 1) + "");
+        var minX = Infinity;
+        var minY = Infinity;
+        var maxX = -Infinity;
+        var maxY = -Infinity;
 
-    var newComp = comp.project.items.addComp(precompName, precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+    // Если стоит галочка "Crop", вычисляем прямоугольник только для последнего кадра слоя
+    var tStart = cropToCurrentFrame ? layer.outPoint : layer.inPoint;
+    var tEnd = cropToCurrentFrame ? layer.outPoint : layer.outPoint;
 
-    for (var i = 0; i < layers.length; i++) {
-        var layer = layers[i];
-        var newLayerInComp = newComp.layers.add(layer.source);
+    for (var t = tStart; t <= tEnd; t += comp.frameDuration) {
+        var rect = layer.sourceRectAtTime(t, false);
+        var pos = layer.position.valueAtTime(t, false);
+        minX = Math.min(minX, pos[0] - rect.width / 2);
+        minY = Math.min(minY, pos[1] - rect.height / 2);
+        maxX = Math.max(maxX, pos[0] + rect.width / 2);
+        maxY = Math.max(maxY, pos[1] + rect.height / 2);
+    }
 
+ 
+        minX = Math.round(minX);
+        minY = Math.round(minY);
+        maxX = Math.round(maxX);
+        maxY = Math.round(maxY);
+
+        var precompWidth = maxX - minX;
+        var precompHeight = maxY - minY;
+        var precompCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
+
+               var precompName;
+            if (namePrefix === "def") {
+                precompName = layer.name + "";
+            } else {
+                precompName = namePrefix + "_" + (i + 1) + "";
+            }
+        var newComp = project.items.addComp(precompName, precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+
+                layer.copyToComp(newComp);
+
+        var newLayerInComp = newComp.layer(1);
         for (var t = newLayerInComp.inPoint; t <= newLayerInComp.outPoint; t += comp.frameDuration) {
             var originalPosAtTime = layer.position.valueAtTime(t, false);
             newLayerInComp.position.setValueAtTime(t, [originalPosAtTime[0] - minX, originalPosAtTime[1] - minY]);
         }
+
+        var newLayer = comp.layers.add(newComp);
+        newLayer.moveBefore(layer);
+        newLayer.position.setValue(precompCenter);
+
+    // сохраняем тип матового слоя
+    var trackMatteType = layer.trackMatteType;
+    
+    // определяем слой-маску или слой-источник, если есть
+    var relatedLayer = null;
+    if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+        if (layer.hasTrackMatte) {
+            relatedLayer = layer.trackMatte; // слой-источник
+        } else if (layer.isTrackMatte) {
+            relatedLayer = comp.layer(layer.index + 1); // слой-маска
+        }
+    }
+    
+    // если связанный слой также является shape-слоем
+    if (relatedLayer && relatedLayer.source && relatedLayer.source instanceof ShapeLayerSource) {
+        // проверяем, есть ли уже прекомпозиция для данной пары
+        var existingPrecomp = null;
+        for (var j = 1; j <= project.numItems; j++) {
+            if (project.item(j).name == layer.name + "_precomp" || project.item(j).name == relatedLayer.name + "_precomp") {
+                existingPrecomp = project.item(j);
+                break;
+            }
+        }
+
+        if (existingPrecomp) {
+            // если уже существует прекомпозиция, просто добавляем в неё слой
+            layer.copyToComp(existingPrecomp);
+        } else {
+            // если нет, создаем новую прекомпозицию и добавляем в неё оба слоя
+            var newComp = project.items.addComp(layer.name + "_precomp", precompWidth, precompHeight, comp.pixelAspect, comp.duration, comp.frameRate);
+            layer.copyToComp(newComp);
+            relatedLayer.copyToComp(newComp);
+
+            var newLayerInComp = newComp.layer(1);
+            var newRelatedLayerInComp = newComp.layer(2);
+            // задаем позицию обоим слоям, как и раньше
+
+            var newLayer = comp.layers.add(newComp);
+            newLayer.moveBefore(layer);
+            newLayer.position.setValue(precompCenter);
+
+            relatedLayer.remove(); // удаляем связанный слой
+        }
+    } else {
+        // ваш исходный код для слоя без связанного shape-слоя
+        var newLayerInComp = newComp.layer(1);
+        // задаем позицию, как и раньше
+
+        var newLayer = comp.layers.add(newComp);
+        newLayer.moveBefore(layer);
+        newLayer.position.setValue(precompCenter);
+
+        // Если исходный слой имел связанный слой-маску, устанавливаем ее для нового слоя
+        if (trackMatteType !== TrackMatteType.NO_TRACK_MATTE) {
+            newLayer.trackMatteType = trackMatteType;
+        }
+    }
+        layer.remove();
+
+        createdPrecomps.push(newComp);
     }
 
-    return newComp;
+    app.endUndoGroup();
+
+    return createdPrecomps;
 }
-
-function main() {
-    var createdPrecomps = createPrecomps("def", false, false);
-    if (createdPrecomps) {
-        alert("Created " + createdPrecomps.length + " precomps.");
-    }
-}
-
-
-
-}(this));
+// Start the script
+})(this);

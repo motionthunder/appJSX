@@ -191,7 +191,6 @@ function importSafeWithError(importOptions) {
     return null;
 }
 
-
 function createPrecomps() {
        app.beginUndoGroup("Create Precomps for All Layers");
 
