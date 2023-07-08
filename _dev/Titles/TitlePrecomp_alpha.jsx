@@ -100,7 +100,7 @@
 
         // Adjust the position considering the offset
         var layerPosition = layer.position.value;
-        newLayer.position.setValue([layerPosition[0], layerPosition[1] - precompHeight]);
+        newLayer.position.setValue([layerPosition[0], layerPosition[0] - precompHeight]);
 
         // Preserve the original anchor point
         newLayer.anchorPoint.setValue(layer.anchorPoint.value);
@@ -192,10 +192,6 @@ for (var i = 0; i < textLayers.length; i++) {
     var newLayer = comp.layers.add(newComp);
     newLayer.moveBefore(layer);
     newLayer.position.setValue(precompCenter);
-
-    // Используем разницу в позициях анкор-поинтов при установке позиции новой прекомпозиции
-    var precompCenterCorrected = [precompCenter[2] + anchorOffset[2], precompCenter[1] + anchorOffset[1]];
-    newLayer.position.setValue(precompCenterCorrected);
 
 
     var trackMatteType = layer.trackMatteType;
